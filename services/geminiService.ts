@@ -33,50 +33,55 @@ const normalizeWord = (s: string) =>
   s
     .trim()
     .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s]/gu, "")
+    .replace(/[^^\p{L}\p{N}\s]/gu, "")
     .replace(/\s+/g, " ");
 
-export const generateGameWords = async (topic: string | undefined, language: Language, excludeWords: string[] = []): Promise<WordPair> => {
+export const generateGameWords = async (
+  topic: string | undefined,
+  language: Language,
+  excludeWords: string[] = [],
+  count: number = 1
+): Promise<WordPair[]> => {
   try {
     const apiKey = process.env.API_KEY;
+    const recentHistory = (excludeWords || []).map(normalizeWord).slice(-50);
+
     if (!apiKey) {
       console.warn("API Key not found, using fallback.");
-      return getRandomFallback(language, excludeWords.map(normalizeWord));
+      return getRandomFallbacks(language, recentHistory, count);
     }
 
     const ai = new GoogleGenAI({ apiKey });
-    
-    // Using a more creative model for word association
-    const modelId = "gemini-3-flash-preview"; 
+    const modelId = "gemini-3-flash-preview";
 
-    const langInstruction = language === 'zh' 
-        ? "Generate the words in Simplified Chinese (Mandarin)." 
-        : "Generate the words in English.";
+    const langInstruction = language === "zh" ? "Generate the words in Simplified Chinese (Mandarin)." : "Generate the words in English.";
 
-    const topicPrompt = topic && topic.trim() !== "" 
-      ? `The words should be related to the topic: "${topic}".` 
-      : "The words can be from any common category (e.g., Food, Objects, Places, People).";
+    const topicPrompt = topic && topic.trim() !== "" ? `The words should be related to the topic: \"${topic}\".` : "The words can be from any common category (e.g., Food, Objects, Places, People).";
 
-    // Normalize and limit history to last 50
-    const recentHistory = (excludeWords || []).map(normalizeWord).slice(-50);
-    const excludeInstruction = recentHistory.length > 0
-        ? `6. DO NOT use the following words (or their close variations): ${recentHistory.join(', ')}.`
-        : "";
+    const excludeInstruction = recentHistory.length > 0 ? `Do NOT use the following words (or their close variations): ${recentHistory.join(', ')}.` : "";
 
+    // Request an array of candidate pairs in a single response
     const prompt = `
-      Generate a pair of words for the party game "Who is the Undercover" (also known as Spyfall or 谁是卧底).
-      
-      Rules for the words:
-      1. They must be distinct nouns.
-      2. They must be related enough that descriptions might be ambiguous (e.g., Apple vs Pear, Lipstick vs Crayon).
-      3. They must NOT be the same word.
-      4. Avoid extremely obscure words.
+      Return exactly ${count} candidate pairs as a JSON array of objects. Each object should have the properties: { "civilianWord": string, "undercoverWord": string }.
+      Make each pair distinct and prefer pairs from different categories to improve variety.
+
+      Tone & style guidance:
+      - Favor playful, vivid, and memorable words that make describing them fun (e.g., "marshmallow", "scooter", "starlight").
+      - Prefer everyday nouns with quirky or colorful associations rather than dry or overly technical terms.
+      - Avoid overly generic pairs (e.g., "cat"/"dog") unless they are framed in an interesting category.
+      - Do not use region-specific slang; keep words broadly familiar.
+
+      Rules for each pair:
+      1. Both entries should be single words or short noun phrases (1-2 words).
+      2. The two words in a pair must be related but not identical.
+      3. Prefer pairs from different categories across the list (food, transport, nature, pop culture, objects) to maximize variety.
+      4. Avoid obscure or overly specialized terms.
       5. ${langInstruction}
       ${excludeInstruction}
-      
+
       ${topicPrompt}
-      
-      Return the result strictly as a JSON object.
+
+      Output only valid JSON (no explanation).
     `;
 
     const response = await ai.models.generateContent({
@@ -85,62 +90,93 @@ export const generateGameWords = async (topic: string | undefined, language: Lan
       config: {
         responseMimeType: "application/json",
         responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            civilianWord: { type: Type.STRING },
-            undercoverWord: { type: Type.STRING },
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              civilianWord: { type: Type.STRING },
+              undercoverWord: { type: Type.STRING },
+            },
+            required: ["civilianWord", "undercoverWord"],
           },
-          required: ["civilianWord", "undercoverWord"],
         },
-        temperature: 0.9, 
+        temperature: 0.9,
       },
     });
 
     const jsonText = response.text;
     if (!jsonText) throw new Error("Empty response from AI");
 
-    const parsed = JSON.parse(jsonText) as WordPair;
-    
-    // Basic validation
-    if (!parsed.civilianWord || !parsed.undercoverWord) {
-        throw new Error("Invalid format");
+    const parsed = JSON.parse(jsonText) as WordPair[];
+    if (!Array.isArray(parsed) || parsed.length === 0) throw new Error("Invalid format: expected array");
+
+    // Basic validation & normalization and ensure uniqueness
+    const seen = new Set<string>();
+    const results: WordPair[] = [];
+    for (const item of parsed) {
+      if (!item?.civilianWord || !item?.undercoverWord) continue;
+      const civ = item.civilianWord;
+      const spy = item.undercoverWord;
+      const civNorm = normalizeWord(civ);
+      const spyNorm = normalizeWord(spy);
+      if (civNorm === spyNorm) continue;
+      if (recentHistory.includes(civNorm) || recentHistory.includes(spyNorm)) continue;
+      const key = civNorm + '||' + spyNorm;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      // Capitalize English words for display
+      results.push(language === 'zh' ? { civilianWord: civ, undercoverWord: spy } : { civilianWord: capitalize(civ), undercoverWord: capitalize(spy) });
+      if (results.length >= count) break;
     }
 
-    // Don't capitalize for Chinese
-    if (language === 'zh') {
-        return parsed;
+    // If not enough valid results from the model, fill from filtered fallbacks
+    if (results.length < count) {
+      const needed = count - results.length;
+      const fallbacks = getRandomFallbacks(language, recentHistory, needed, seen);
+      results.push(...fallbacks);
     }
 
-    return {
-      civilianWord: capitalize(parsed.civilianWord),
-      undercoverWord: capitalize(parsed.undercoverWord)
-    };
-
+    return results.slice(0, count);
   } catch (error) {
     console.error("Gemini API Error:", error);
-    return getRandomFallback(language, excludeWords.map(normalizeWord));
+    const recentHistory = (excludeWords || []).map(normalizeWord).slice(-50);
+    return getRandomFallbacks(language, recentHistory, count);
   }
 };
 
-const getRandomFallback = (language: Language, excludeNormalized: string[] = []): WordPair => {
+const getRandomFallbacks = (language: Language, excludeNormalized: string[] = [], count: number = 1, alreadySeen: Set<string> | null = null): WordPair[] => {
   const source = language === 'zh' ? FALLBACK_WORDS_ZH : FALLBACK_WORDS_EN;
   const excludeSet = new Set((excludeNormalized || []).map(normalizeWord));
+  const picked: WordPair[] = [];
+  const usedKeys = new Set<string>(alreadySeen ? Array.from(alreadySeen) : []);
 
-  // Filter out any fallback pairs where either normalized word is in the exclude set
-  const filtered = source.filter(p => {
+  const candidates = source.filter(p => {
     const civ = normalizeWord(p.civilianWord);
     const spy = normalizeWord(p.undercoverWord);
-    return civ && spy && !excludeSet.has(civ) && !excludeSet.has(spy) && civ !== spy;
+    const key = civ + '||' + spy;
+    return civ && spy && civ !== spy && !excludeSet.has(civ) && !excludeSet.has(spy) && !usedKeys.has(key);
   });
 
-  if (filtered.length === 0) {
-    // If none left after filtering, return a random pair from the full list
-    const index = Math.floor(Math.random() * source.length);
-    return source[index];
+  // Shuffle candidates
+  for (let i = candidates.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
   }
 
-  const index = Math.floor(Math.random() * filtered.length);
-  return filtered[index];
+  for (const p of candidates) {
+    if (picked.length >= count) break;
+    picked.push(p);
+    usedKeys.add(normalizeWord(p.civilianWord) + '||' + normalizeWord(p.undercoverWord));
+  }
+
+  // If still not enough, fill from full source allowing repeats
+  while (picked.length < count) {
+    const idx = Math.floor(Math.random() * source.length);
+    const p = source[idx];
+    picked.push(p);
+  }
+
+  return picked.slice(0, count);
 };
 
 const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);

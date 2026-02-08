@@ -1,0 +1,5 @@
+{
+  "name": "Spyfall: Who is the Undercover?",
+  "description": "A digital version of the popular party game 'Who is the Spy' (谁是卧底). Players receive secret words, describe them, and try to identify the undercover player. Powered by Gemini AI for infinite word generation.",
+  "requestFramePermissions": []
+}

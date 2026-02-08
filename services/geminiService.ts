@@ -8,6 +8,11 @@ const FALLBACK_WORDS_EN: WordPair[] = [
   { civilianWord: "Superman", undercoverWord: "Batman" },
   { civilianWord: "Facebook", undercoverWord: "Instagram" },
   { civilianWord: "Guitar", undercoverWord: "Violin" },
+  { civilianWord: "Apple", undercoverWord: "Pear" },
+  { civilianWord: "Cat", undercoverWord: "Dog" },
+  { civilianWord: "Train", undercoverWord: "Bus" },
+  { civilianWord: "Pasta", undercoverWord: "Noodles" },
+  { civilianWord: "Ocean", undercoverWord: "Lake" },
 ];
 
 const FALLBACK_WORDS_ZH: WordPair[] = [
@@ -17,14 +22,26 @@ const FALLBACK_WORDS_ZH: WordPair[] = [
   { civilianWord: "微信", undercoverWord: "QQ" },
   { civilianWord: "吉他", undercoverWord: "小提琴" },
   { civilianWord: "苹果", undercoverWord: "梨" },
+  { civilianWord: "猫", undercoverWord: "狗" },
+  { civilianWord: "火车", undercoverWord: "公交" },
+  { civilianWord: "意大利面", undercoverWord: "面条" },
+  { civilianWord: "海洋", undercoverWord: "湖泊" },
 ];
+
+// Normalize words for comparison: trim, lowercase, remove punctuation, collapse spaces
+const normalizeWord = (s: string) =>
+  s
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, "")
+    .replace(/\s+/g, " ");
 
 export const generateGameWords = async (topic: string | undefined, language: Language, excludeWords: string[] = []): Promise<WordPair> => {
   try {
     const apiKey = process.env.API_KEY;
     if (!apiKey) {
       console.warn("API Key not found, using fallback.");
-      return getRandomFallback(language);
+      return getRandomFallback(language, excludeWords.map(normalizeWord));
     }
 
     const ai = new GoogleGenAI({ apiKey });
@@ -40,8 +57,8 @@ export const generateGameWords = async (topic: string | undefined, language: Lan
       ? `The words should be related to the topic: "${topic}".` 
       : "The words can be from any common category (e.g., Food, Objects, Places, People).";
 
-    // Limit history to last 50 words to keep prompt clean, though Gemini context is large enough for more.
-    const recentHistory = excludeWords.slice(-50);
+    // Normalize and limit history to last 50
+    const recentHistory = (excludeWords || []).map(normalizeWord).slice(-50);
     const excludeInstruction = recentHistory.length > 0
         ? `6. DO NOT use the following words (or their close variations): ${recentHistory.join(', ')}.`
         : "";
@@ -101,14 +118,29 @@ export const generateGameWords = async (topic: string | undefined, language: Lan
 
   } catch (error) {
     console.error("Gemini API Error:", error);
-    return getRandomFallback(language);
+    return getRandomFallback(language, excludeWords.map(normalizeWord));
   }
 };
 
-const getRandomFallback = (language: Language): WordPair => {
+const getRandomFallback = (language: Language, excludeNormalized: string[] = []): WordPair => {
   const source = language === 'zh' ? FALLBACK_WORDS_ZH : FALLBACK_WORDS_EN;
-  const index = Math.floor(Math.random() * source.length);
-  return source[index];
+  const excludeSet = new Set((excludeNormalized || []).map(normalizeWord));
+
+  // Filter out any fallback pairs where either normalized word is in the exclude set
+  const filtered = source.filter(p => {
+    const civ = normalizeWord(p.civilianWord);
+    const spy = normalizeWord(p.undercoverWord);
+    return civ && spy && !excludeSet.has(civ) && !excludeSet.has(spy) && civ !== spy;
+  });
+
+  if (filtered.length === 0) {
+    // If none left after filtering, return a random pair from the full list
+    const index = Math.floor(Math.random() * source.length);
+    return source[index];
+  }
+
+  const index = Math.floor(Math.random() * filtered.length);
+  return filtered[index];
 };
 
 const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);

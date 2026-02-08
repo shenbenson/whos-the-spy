@@ -52,7 +52,10 @@ export const generateGameWords = async (
     }
 
     const ai = new GoogleGenAI({ apiKey });
-    const modelId = "gemini-3-flash-preview";
+
+    // Try the newer Gemini model first, fall back to an older model on 429 rate-limit errors
+    const preferredModel = "gemini-3-flash-preview";
+    const fallbackModel = "gemini-2.5-flash";
 
     const langInstruction = language === "zh" ? "Generate the words in Simplified Chinese (Mandarin)." : "Generate the words in English.";
 
@@ -84,25 +87,61 @@ export const generateGameWords = async (
       Output only valid JSON (no explanation).
     `;
 
-    const response = await ai.models.generateContent({
-      model: modelId,
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              civilianWord: { type: Type.STRING },
-              undercoverWord: { type: Type.STRING },
+    // Helper to detect rate limit errors (429)
+    const isRateLimitError = (err: any) => {
+      try {
+        if (!err) return false;
+        if (err?.response?.status === 429) return true;
+        if (err?.status === 429) return true;
+        if (err?.statusCode === 429) return true;
+        if (err?.code === 429 || err?.code === '429') return true;
+        if (typeof err.message === 'string' && err.message.includes('429')) return true;
+        return false;
+      } catch (e) {
+        return false;
+      }
+    };
+
+    const callModel = async (model: string) => {
+      return ai.models.generateContent({
+        model,
+        contents: prompt,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                civilianWord: { type: Type.STRING },
+                undercoverWord: { type: Type.STRING },
+              },
+              required: ["civilianWord", "undercoverWord"],
             },
-            required: ["civilianWord", "undercoverWord"],
           },
+          temperature: 0.9,
         },
-        temperature: 0.9,
-      },
-    });
+      });
+    };
+
+    let response: any;
+    try {
+      response = await callModel(preferredModel);
+    } catch (err: any) {
+      // If rate limited, try the fallback model once
+      if (isRateLimitError(err)) {
+        console.warn('Preferred model rate-limited (429). Retrying with fallback model.');
+        try {
+          response = await callModel(fallbackModel);
+        } catch (err2) {
+          // rethrow to be handled by outer catch and fallback to local list
+          throw err2;
+        }
+      } else {
+        // non-rate-limit error, rethrow
+        throw err;
+      }
+    }
 
     const jsonText = response.text;
     if (!jsonText) throw new Error("Empty response from AI");

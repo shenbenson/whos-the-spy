@@ -147,7 +147,7 @@ const App: React.FC = () => {
       {/* Footer / Copyright */}
       {phase === 'setup' && (
         <footer className="fixed bottom-4 w-full text-center text-slate-600 text-xs pointer-events-none">
-          Powered by Gemini AI
+          Created with ❤️ by <a href="https://github.com/shenbenson" target="_blank" rel="noopener noreferrer">Benson</a>
         </footer>
       )}
     </div>
